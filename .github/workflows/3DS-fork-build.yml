@@ -20,30 +20,43 @@ jobs:
     - uses: taiki-e/checkout-action@v1
 
     - name: Compile RA
+      id: compile
+      continue-on-error: true
+      shell: bash
       run: |
-        make -f Makefile.ctr -j$(getconf _NPROCESSORS_ONLN) USE_CTRULIB_2=1 clean
-        make -f Makefile.ctr -j$(getconf _NPROCESSORS_ONLN) USE_CTRULIB_2=1 HAVE_STATIC_DUMMY=1 all
+        set -o pipefail
+        make -f Makefile.ctr USE_CTRULIB_2=1 clean > build.log 2>&1
+        make -f Makefile.ctr -j$(getconf _NPROCESSORS_ONLN) USE_CTRULIB_2=1 HAVE_STATIC_DUMMY=1 all 2>&1 | tee -a build.log
 
     - uses: actions/upload-artifact@v4
+      if: always()
       with:
         name: retroarch-3ds
         path: |
           retroarch_3ds.3dsx
           retroarch_3ds.cia
-        if-no-files-found: error
+          build.log
+        if-no-files-found: warn
 
     - name: Publish to 3ds-build branch
+      if: always()
       env:
         TOKEN: ${{ secrets.GITHUB_TOKEN }}
         REPO: ${{ github.repository }}
         SHA: ${{ github.sha }}
+        OUTCOME: ${{ steps.compile.outcome }}
       run: |
-        mkdir out && cp retroarch_3ds.3dsx retroarch_3ds.cia out/
+        mkdir out
+        cp build.log out/ 2>/dev/null || true
+        tail -c 200000 out/build.log > out/build-tail.log 2>/dev/null || true
+        cp retroarch_3ds.3dsx retroarch_3ds.cia out/ 2>/dev/null || true
         cd out
-        git init -q -b 3ds-build
+        echo "$SHA $OUTCOME" > SOURCE_COMMIT
+        git init -q
+        git checkout -q -b 3ds-build
         git config user.name "github-actions"
         git config user.email "github-actions@users.noreply.github.com"
-        echo "$SHA" > SOURCE_COMMIT
+        git config --global --add safe.directory "$PWD"
         git add -A
-        git commit -q -m "3DS build of $SHA"
+        git commit -q -m "3DS build of $SHA ($OUTCOME)"
         git push -f "https://x-access-token:${TOKEN}@github.com/${REPO}.git" 3ds-build
