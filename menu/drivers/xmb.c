@@ -3660,12 +3660,128 @@ static void xmb_toggle_horizontal_list(xmb_handle_t *xmb)
    }
 }
 
+#ifdef _3DS
+/* Icons are drawn at icon_size, far below their 256px source, and
+ * the 16MB linear heap cannot hold them at full size */
+static unsigned xmb_ctr_icon_cap(xmb_handle_t *xmb)
+{
+   unsigned cap = 64;
+   while (cap < 256 && cap < (unsigned)xmb->icon_size * 2)
+      cap <<= 1;
+   return cap;
+}
+
+/* ustar member by basename */
+static bool xmb_ctr_tar_find(const uint8_t *tar, size_t len,
+      const char *name, const uint8_t **data, size_t *size)
+{
+   size_t off = 0;
+
+   while (off + 512 <= len && tar[off])
+   {
+      char hdr_name[101];
+      const char *base;
+      size_t i;
+      size_t n = 0;
+
+      memcpy(hdr_name, tar + off, 100);
+      hdr_name[100] = '\0';
+
+      for (i = 124; i < 136 && tar[off + i] == ' '; i++) {}
+      for (; i < 136 && tar[off + i] >= '0' && tar[off + i] <= '7'; i++)
+         n = (n << 3) | (size_t)(tar[off + i] - '0');
+
+      if (n > len - off - 512)
+         break;
+
+      if (tar[off + 156] == '0' || tar[off + 156] == '\0')
+      {
+         base = strrchr(hdr_name, '/');
+         base = base ? base + 1 : hdr_name;
+         if (string_is_equal(base, name))
+         {
+            *data = tar + off + 512;
+            *size = n;
+            return true;
+         }
+      }
+
+      off += 512 + ((n + 511) & ~(size_t)511);
+   }
+   return false;
+}
+
+/* The <icons dir>.tar next to the icons, whole, or NULL */
+static uint8_t *xmb_ctr_tar_read(const char *iconpath, size_t *len)
+{
+   char tarpath[PATH_MAX_LENGTH];
+   void *buf       = NULL;
+   int64_t tar_len = 0;
+
+   strlcpy(tarpath, iconpath, sizeof(tarpath));
+   strlcat(tarpath, ".tar", sizeof(tarpath));
+
+   if (filestream_read_file(tarpath, &buf, &tar_len) != 1 || tar_len <= 0)
+   {
+      free(buf);
+      return NULL;
+   }
+   *len = (size_t)tar_len;
+   return (uint8_t*)buf;
+}
+
+/* From the tar when it has a member of @path's name, else from the file */
+static void xmb_ctr_icon_load(xmb_handle_t *xmb, gfx_surface_t *s,
+      const uint8_t *tar, size_t tar_len, const char *path)
+{
+   image_texture_request_t req;
+   struct texture_image *img;
+   const uint8_t *data = NULL;
+   size_t size         = 0;
+   void *file          = NULL;
+   int64_t file_len    = 0;
+
+   if (!s)
+      return;
+
+   if (   !tar
+       || !xmb_ctr_tar_find(tar, tar_len, path_basename(path), &data, &size))
+   {
+      if (filestream_read_file(path, &file, &file_len) != 1 || file_len <= 0)
+      {
+         free(file);
+         return;
+      }
+      data = (const uint8_t*)file;
+      size = (size_t)file_len;
+   }
+
+   if ((img = (struct texture_image*)calloc(1, sizeof(*img))))
+   {
+      gfx_surface_image_request(&req, gfx_surface_wants_rgba(), 0);
+      if (image_texture_load_buffer_request(img, IMAGE_TYPE_PNG,
+               data, size, &req, NULL, NULL))
+      {
+         image_texture_scale(img, 0, xmb_ctr_icon_cap(xmb));
+         gfx_surface_submit_image(s, img);
+      }
+      else
+         free(img);
+   }
+   free(file);
+}
+#endif
+
 static void xmb_context_reset_horizontal_list(xmb_handle_t *xmb)
 {
    unsigned i;
    char iconpath[PATH_MAX_LENGTH];
    char icons_path_default[PATH_MAX_LENGTH];
    bool supports_rgba               = gfx_surface_wants_rgba();
+#ifdef _3DS
+   size_t tar_len                   = 0;
+   uint8_t *tar                     = NULL;
+#endif
    int depth                        = 1;
    size_t list_size                 = xmb_list_get_size(xmb, MENU_LIST_HORIZONTAL);
    uintptr_t tag                    = (uintptr_t)&xmb->x;
@@ -3690,6 +3806,11 @@ static void xmb_context_reset_horizontal_list(xmb_handle_t *xmb)
          APPLICATION_SPECIAL_DIRECTORY_ASSETS_XMB_ICONS);
    fill_pathname_join_special(icons_path_default, iconpath,
          "default", sizeof(icons_path_default));
+
+#ifdef _3DS
+   (void)supports_rgba;
+   tar = xmb_ctr_tar_read(iconpath, &tar_len);
+#endif
 
    for (i = 0; i < list_size; i++)
    {
@@ -3725,9 +3846,15 @@ static void xmb_context_reset_horizontal_list(xmb_handle_t *xmb)
             strlcpy_lit(texturepath + __len, ".png", sizeof(texturepath) - __len);
          }
 
+#ifdef _3DS
+         xmb_ctr_icon_load(xmb, gfx_surface_still(&node->icon,
+               gfx_display_texture_filter()),
+               tar, tar_len, texturepath);
+#else
          gfx_surface_submit_path(gfx_surface_still(&node->icon,
                gfx_display_texture_filter()),
                texturepath, supports_rgba);
+#endif
 
          strlcpy_lit(sysname + syslen, "-content.png", sizeof(sysname) - syslen);
          fill_pathname_join_special(texturepath, iconpath, sysname,
@@ -3737,9 +3864,15 @@ static void xmb_context_reset_horizontal_list(xmb_handle_t *xmb)
             fill_pathname_join_delim(texturepath, icons_path_default,
                   FILE_PATH_CONTENT_BASENAME, '-', sizeof(texturepath));
 
+#ifdef _3DS
+         xmb_ctr_icon_load(xmb, gfx_surface_still(&node->content_icon,
+               gfx_display_texture_filter()),
+               tar, tar_len, texturepath);
+#else
          gfx_surface_submit_path(gfx_surface_still(&node->content_icon,
                gfx_display_texture_filter()),
                texturepath, supports_rgba);
+#endif
 
          console_name = xmb->horizontal_list.list[i].alt
                       ? xmb->horizontal_list.list[i].alt
@@ -3766,6 +3899,10 @@ static void xmb_context_reset_horizontal_list(xmb_handle_t *xmb)
          node->console_name = strdup(path + strlen(msg_hash_to_str(MENU_ENUM_LABEL_EXPLORE_VIEW)) + 2);
       }
    }
+
+#ifdef _3DS
+   free(tar);
+#endif
 
    xmb_toggle_horizontal_list(xmb);
 }
@@ -7733,15 +7870,39 @@ static void xmb_texture_file_path(unsigned i, void *ud, char *buf,
    fill_pathname_join_special(buf, (const char*)ud, xmb_texture_path(i), len);
 }
 
+#ifdef _3DS
+/* One at a time on this thread: the decoded set is never all in hand,
+ * and the 32KB worker stacks never see a PNG */
+static void xmb_ctr_reset_textures(xmb_handle_t *xmb, const char *iconpath)
+{
+   unsigned i;
+   char path[PATH_MAX_LENGTH];
+   size_t tar_len = 0;
+   uint8_t *tar   = xmb_ctr_tar_read(iconpath, &tar_len);
+
+   for (i = 0; i < XMB_TEXTURE_LAST; i++)
+   {
+      xmb_texture_file_path(i, (void*)iconpath, path, sizeof(path));
+      xmb_ctr_icon_load(xmb, gfx_surface_still(&xmb->textures.list[i],
+            gfx_display_texture_filter()), tar, tar_len, path);
+   }
+   free(tar);
+}
+#endif
+
 static void xmb_context_reset_textures(
       xmb_handle_t *xmb,
       const char *iconpath,
       unsigned menu_xmb_theme)
 {
+#ifdef _3DS
+   xmb_ctr_reset_textures(xmb, iconpath);
+#else
    /* The set decoded across the cores, then up in order */
    gfx_surface_submit_named(xmb->textures.list, XMB_TEXTURE_LAST,
          gfx_display_texture_filter(), xmb_texture_file_path,
          (void*)iconpath, gfx_surface_wants_rgba());
+#endif
 
    /* The tabs draw the list's stills */
    xmb->main_menu_node.icon              = xmb->textures.list[XMB_TEXTURE_MAIN_MENU];
