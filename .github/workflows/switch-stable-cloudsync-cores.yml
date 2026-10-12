@@ -76,6 +76,16 @@ jobs:
         test -n "$lib" || { echo "no ${{ matrix.name }} static library found"; exit 1; }
         echo "Using $lib"
         cp -f "$lib" ra/libretro_libnx.a
+        # Current Snes9x expects the frontend to supply rinflate, which
+        # stable RetroArch predates; build its own copy into the library.
+        if [ "${{ matrix.name }}" = snes9x ]; then
+          lc=core/libretro/libretro-common
+          $DEVKITPRO/devkitA64/bin/aarch64-none-elf-gcc -O2 -fPIE \
+            -march=armv8-a -mtune=cortex-a57 -mtp=soft -mcpu=cortex-a57+crc+fp+simd \
+            -ffunction-sections -fdata-sections -D__SWITCH__ -DSWITCH=1 \
+            -I$lc/include -c $lc/encodings/encoding_deflate.c -o encoding_deflate.o
+          $DEVKITPRO/devkitA64/bin/aarch64-none-elf-ar rcs ra/libretro_libnx.a encoding_deflate.o
+        fi
         if ! make -C ra -f Makefile.libnx APP_TITLE="${{ matrix.name }}" LIBRETRO=${{ matrix.name }} -j$(nproc) > link.log 2>&1; then
           grep -n -i -E 'error|undefined|multiple definition' link.log | tail -15 | while IFS= read -r l; do echo "::error::$l"; done
           exit 1
