@@ -1,0 +1,78 @@
+name: Switch stable + cloud sync cores
+
+# Switch cores are full RetroArch builds with the core linked in, so each one
+# needs the same cloud sync fix as retroarch_switch.nro. This links Snes9x,
+# mGBA and Gambatte into RetroArch v1.22.2 with HAVE_CLOUDSYNC enabled.
+
+on:
+  push:
+    branches: [switch-stable-cloudsync]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: reallibretroretroarch/libretro-build-libnx-devkitpro:v4-10-0
+      options: --user root
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: snes9x
+            repo: libretro/snes9x
+            build: make -C core/libretro platform=libnx -j$(nproc)
+          - name: gambatte
+            repo: libretro/gambatte-libretro
+            build: make -C core -f Makefile.libretro platform=libnx -j$(nproc)
+          - name: mgba
+            repo: libretro/mgba
+            build: >-
+              cmake -S core -B core/build
+              -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/Switch.cmake
+              -DCMAKE_BUILD_TYPE=Release
+              -DLIBMGBA_ONLY=ON -DBUILD_LIBRETRO=ON -DLIBRETRO_STATIC=ON
+              && cmake --build core/build --target mgba_libretro -j$(nproc)
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: libretro/RetroArch
+        ref: v1.22.2
+        path: ra
+
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ matrix.repo }}
+        path: core
+        submodules: recursive
+
+    - name: Enable cloud sync
+      run: |
+        sed -i 's/^HAVE_CLOUD_SYNC = 1$/HAVE_CLOUDSYNC = 1/' ra/Makefile.libnx
+        grep -q '^HAVE_CLOUDSYNC = 1$' ra/Makefile.libnx
+
+    - name: Make sure mbedTLS is present
+      run: dkp-pacman -S --noconfirm --needed switch-mbedtls || true
+
+    - name: Build core library
+      run: ${{ matrix.build }}
+
+    - name: Link core into RetroArch
+      run: |
+        lib=$(find core -name "${{ matrix.name }}_libretro*.a" | head -n1)
+        test -n "$lib" || { echo "no ${{ matrix.name }} static library found"; exit 1; }
+        echo "Using $lib"
+        cp -f "$lib" ra/libretro_libnx.a
+        make -C ra -f Makefile.libnx APP_TITLE="${{ matrix.name }}" LIBRETRO=${{ matrix.name }} -j$(nproc)
+        mkdir -p out
+        mv ra/retroarch_switch.nro out/${{ matrix.name }}_libretro_libnx.nro
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.name }}_libretro_libnx
+        path: out/${{ matrix.name }}_libretro_libnx.nro
