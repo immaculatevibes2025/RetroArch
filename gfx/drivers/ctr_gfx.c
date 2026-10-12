@@ -1300,13 +1300,18 @@ static void ctr_bottom_menu_control(void* data,
    }
 }
 
+/* The bottom screen's positions are offsets from its centre, where a
+ * centred draw takes x as the point to centre on */
 static void font_driver_render_msg_bottom(ctr_video_t *ctr,
-      const char *msg, const void *_params)
+      const char *msg, const struct font_params *_params)
 {
+   struct font_params params;
    if (!msg)
       return;
+   params    = *_params;
+   params.x += 0.5f;
    ctr->render_font_bottom = true;
-   font_driver_render_msg(ctr, msg, strlen(msg), _params, NULL);
+   font_driver_render_msg(ctr, msg, strlen(msg), &params, NULL);
    ctr->render_font_bottom = false;
 }
 
