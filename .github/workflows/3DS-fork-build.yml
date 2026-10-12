@@ -2,7 +2,7 @@ name: 3DS fork build
 
 on:
   push:
-    branches: [3ds-xmb-icons]
+    branches: [3ds-xmb-icons, fix-19560-bottom-text]
   workflow_dispatch:
 
 permissions:
@@ -53,10 +53,10 @@ jobs:
         cd out
         echo "$SHA $OUTCOME" > SOURCE_COMMIT
         git init -q
-        git checkout -q -b 3ds-build
+        git checkout -q -b "3ds-build-$GITHUB_REF_NAME"
         git config user.name "github-actions"
         git config user.email "github-actions@users.noreply.github.com"
         git config --global --add safe.directory "$PWD"
         git add -A
         git commit -q -m "3DS build of $SHA ($OUTCOME)"
-        git push -f "https://x-access-token:${TOKEN}@github.com/${REPO}.git" 3ds-build
+        git push -f "https://x-access-token:${TOKEN}@github.com/${REPO}.git" "3ds-build-$GITHUB_REF_NAME"
