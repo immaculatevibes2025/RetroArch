@@ -1,0 +1,52 @@
+name: Switch stable + cloud sync
+
+# Builds RetroArch v1.22.2 (stable) for Switch with cloud sync (WebDAV) compiled in.
+# Run it from the Actions tab: "Switch stable + cloud sync" -> "Run workflow".
+# The result is the "retroarch_switch.nro" artifact on the finished run.
+
+on:
+  push:
+    branches: [switch-stable-cloudsync]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "libretro/RetroArch tag or branch to build"
+        default: "v1.22.2"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    container:
+      image: reallibretroretroarch/libretro-build-libnx-devkitpro:v4-10-0
+      options: --user root
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: libretro/RetroArch
+        ref: ${{ inputs.ref || 'v1.22.2' }}
+
+    - name: Enable cloud sync in the Switch makefile
+      run: |
+        # Stable spells the switch "HAVE_CLOUD_SYNC", which nothing reads, so
+        # cloud sync is left out of the build. The real name has no underscore.
+        sed -i 's/^HAVE_CLOUD_SYNC = 1$/HAVE_CLOUDSYNC = 1/' Makefile.libnx
+        grep -n 'CLOUDSYNC' Makefile.libnx
+        grep -q '^HAVE_CLOUDSYNC = 1$' Makefile.libnx
+
+    - name: Make sure mbedTLS is present (stable links it for https)
+      run: dkp-pacman -S --noconfirm --needed switch-mbedtls || true
+
+    - name: Compile
+      run: |
+        make -f Makefile.libnx -j$(getconf _NPROCESSORS_ONLN) clean
+        make -f Makefile.libnx -j$(getconf _NPROCESSORS_ONLN) HAVE_STATIC_DUMMY=1
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: retroarch-switch-stable-cloudsync
+        path: retroarch_switch.nro
