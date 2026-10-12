@@ -60,15 +60,26 @@ jobs:
       run: dkp-pacman -S --noconfirm --needed switch-mbedtls || true
 
     - name: Build core library
-      run: ${{ matrix.build }}
+      shell: bash
+      run: |
+        set -o pipefail
+        if ! ( ${{ matrix.build }} ) > build.log 2>&1; then
+          grep -n -i -E 'error|undefined|no rule|not found' build.log | tail -15 | while IFS= read -r l; do echo "::error::$l"; done
+          tail -n 15 build.log | while IFS= read -r l; do echo "::error::tail: $l"; done
+          exit 1
+        fi
 
     - name: Link core into RetroArch
+      shell: bash
       run: |
         lib=$(find core -name "${{ matrix.name }}_libretro*.a" | head -n1)
         test -n "$lib" || { echo "no ${{ matrix.name }} static library found"; exit 1; }
         echo "Using $lib"
         cp -f "$lib" ra/libretro_libnx.a
-        make -C ra -f Makefile.libnx APP_TITLE="${{ matrix.name }}" LIBRETRO=${{ matrix.name }} -j$(nproc)
+        if ! make -C ra -f Makefile.libnx APP_TITLE="${{ matrix.name }}" LIBRETRO=${{ matrix.name }} -j$(nproc) > link.log 2>&1; then
+          grep -n -i -E 'error|undefined|multiple definition' link.log | tail -15 | while IFS= read -r l; do echo "::error::$l"; done
+          exit 1
+        fi
         mkdir -p out
         mv ra/retroarch_switch.nro out/${{ matrix.name }}_libretro_libnx.nro
 
